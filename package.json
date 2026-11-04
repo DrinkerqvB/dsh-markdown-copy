@@ -1,0 +1,53 @@
+{
+  "name": "dsh-markdown-copy",
+  "version": "0.1.0",
+  "description": "Copy selected DSH conversation content as Markdown source",
+  "type": "module",
+  "license": "MIT",
+  "author": "WANGQiaoyang",
+  "homepage": "https://github.com/DrinkerqvB/dsh-markdown-copy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DrinkerqvB/dsh-markdown-copy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DrinkerqvB/dsh-markdown-copy/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "clipboard",
+    "markdown",
+    "copy"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "src",
+    "build.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "cd test && node serialize.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  }
+}

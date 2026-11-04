@@ -1,0 +1,6 @@
+node_modules/
+test/node_modules/
+.npm-cache/
+.refsrc/
+*.log
+.github-token
