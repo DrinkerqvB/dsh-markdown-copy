@@ -10,6 +10,8 @@ DSH 的消息本来就是由 Markdown 渲染出来的：标题、列表、代码
 - 输入框、多行编辑框、可编辑区域里的复制不受影响。
 - 选区可跨多条消息，按文档顺序输出。
 - 内置的“复制”按钮保持原样（DSH 自带的复制按钮输出的已经是 Markdown 源码）。
+- 选区落在表格或代码块内部时，会扩展到整个表格 / 整个代码块，保证粘贴后的结构完整。
+- 选区落在行内构件内部（加粗、斜体、行内代码、链接、公式、标题、引用、列表项）时，按祖先链补回对应标记，只输出选中的文字。
 
 ## 转换规则
 
@@ -20,13 +22,19 @@ DSH 的消息本来就是由 Markdown 渲染出来的：标题、列表、代码
 | `ul` / `ol` / 嵌套列表 | `- ` / `1. `，嵌套缩进 2 空格，任务列表输出 `[x]` / `[ ]` |
 | `blockquote` | 每行加 `> ` |
 | `pre` / `.md-code-block` | 围栏代码块，语言取自代码块 banner 的语言标签 |
-| `table` | GFM 表格，按单元格 `textAlign` 输出对齐行 |
+| `table` | GFM 表格，按单元格对齐方式（`textAlign` 样式或 `align` 属性）输出对齐行 |
 | `strong` / `em` / `del` | `**` / `*` / `~~` |
 | `code` | 反引号，按内容自适应围栏长度 |
 | `a` / `img` | `[text](href)` / `![alt](src)` |
 | `.katex` / `.katex-display` | `$…$` / `$$…$$`，TeX 取自 KaTeX 的 `application/x-tex` 注解 |
-| `hr`、`br` | `---`、换行 |
+| `hr`、`br` | `---`、`\` 换行（与渲染器的软、硬换行设置无关） |
 | `[data-clock]` 操作行、代码块 banner | 跳过 |
+
+## 转义与等价性
+
+正文文本会被逐字符转义（`*`、`` ` ``、`[`、`]`、`<`、成对 `$`、行首的块语法、`&entity;` 等，按上下文判断），保证粘贴后重新渲染的结果与屏幕上选中的内容一致；代码围栏、行内代码、公式与链接目标属于各自的语法，不做转义。
+
+这条契约是**渲染等价**，不是逐字节还原：渲染阶段已经消耗掉的源写法（`\#` 与 `#`、`*` 与 `-` 列表标记等）在 DOM 里无法区分，任何实现都恢复不了。需要与模型原文逐字节一致时，请使用每条消息自带的复制按钮。
 
 ## 安装
 
@@ -47,7 +55,9 @@ cd test && npm install && node serialize.test.mjs
 
 ## 已知限制
 
-输出是从渲染后的 DOM 重建的，因此渲染阶段已被消耗的转义反斜杠（例如正文里字面量的 `\*`）不会还原。得到的是语义等价的 Markdown，而不是与模型原文逐字节一致的内容；正文中的普通文字、结构、表格、代码和公式不受影响。
+- 逐字节还原不可行，见上一节。
+- 选中表格或代码块的一部分时会把整个构件输出，内容多于选中的部分。
+- 模型原文里的原始 HTML 标签在 DSH 里本就不渲染，自然也不会出现在输出里。
 
 ## English
 
@@ -61,7 +71,9 @@ DSH renders messages from Markdown: headings, lists, code blocks (with language)
 
 Install with `dsh plugin add https://github.com/DrinkerqvB/dsh-markdown-copy`.
 
-Reconstruction works from the rendered DOM, so escape backslashes already consumed by rendering (for example a literal `\*`) are not restored; the output is equivalent Markdown, not byte-exact source.
+Prose is escaped by context (`*`, backticks, `[`, `]`, `<`, paired `$`, line-start block syntax and `&entity;`), so pasting re-renders exactly what was on screen; code blocks, inline code, math and link destinations keep their own syntax untouched. The contract is render-equivalence, not byte-exact source: syntax already consumed by rendering (such as a literal `\*`) cannot be recovered — use the built-in per-message copy button when you need the original bytes.
+
+Selections inside a table or code block are widened to the whole construct; selections inside an inline construct (bold, inline code, link, heading, quote, list item) get their marker rebuilt around the selected text only.
 
 ## License
 

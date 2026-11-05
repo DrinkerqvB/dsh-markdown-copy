@@ -278,3 +278,171 @@ test("copy listener converts chat selections and leaves other selections alone",
   });
   assert.equal(collapsed.prevented, false);
 });
+
+test("markdown syntax characters in prose are escaped", () => {
+  const dom = domWith(`
+    <p>Use * for a list, _ for emphasis, \` for code.</p>
+    <p>Tags like &lt;div&gt; and [brackets] stay literal.</p>
+    <p>Entities &amp;amp; and dollars $x$ stay literal too.</p>
+  `);
+  assert.equal(
+    serializeAll(dom),
+    [
+      "Use \\* for a list, \\_ for emphasis, \\` for code.",
+      "",
+      "Tags like \\<div> and \\[brackets\\] stay literal.",
+      "",
+      "Entities \\&amp; and dollars \\$x\\$ stay literal too."
+    ].join("\n")
+  );
+});
+
+test("line starts that look like block syntax are escaped", () => {
+  const dom = domWith(
+    `<p># not a heading<br>1. not a list<br>&gt; not a quote<br>- not a list</p>`
+  );
+  assert.equal(
+    serializeAll(dom),
+    [
+      "\\# not a heading\\",
+      "1\\. not a list\\",
+      "\\> not a quote\\",
+      "\\- not a list"
+    ].join("\n")
+  );
+});
+
+test("literal backslashes survive", () => {
+  const dom = domWith(String.raw`<p>C:\Users\bin and a\*b and a lone \</p>`);
+  assert.equal(serializeAll(dom), String.raw`C:\Users\bin and a\\\*b and a lone \\`);
+});
+
+test("intraword underscores stay untouched", () => {
+  const dom = domWith(`<p>snake_case_name and _em_</p>`);
+  assert.equal(serializeAll(dom), "snake_case_name and \\_em\\_");
+});
+
+test("image alt text is escaped", () => {
+  const dom = domWith(`<p><img src="a.png" alt="a *b* [c]"></p>`);
+  assert.equal(serializeAll(dom), "![a \\*b\\* \\[c\\]](a.png)");
+});
+
+test("a single dollar stays literal", () => {
+  const dom = domWith(`<p>costs $5 today</p>`);
+  assert.equal(serializeAll(dom), "costs $5 today");
+});
+
+test("partial selection inside inline markup rebuilds its markers", () => {
+  const bold = domWith(`<p>Hello <strong>bold text</strong> world</p>`);
+  assert.equal(
+    serializeRange(bold, (range, document) => {
+      const node = document.querySelector("strong").firstChild;
+      range.setStart(node, 2);
+      range.setEnd(node, 6);
+    }),
+    "**ld t**"
+  );
+
+  const code = domWith(`<p>run <code>npm install</code> now</p>`);
+  assert.equal(
+    serializeRange(code, (range, document) => {
+      const node = document.querySelector("code").firstChild;
+      range.setStart(node, 1);
+      range.setEnd(node, 5);
+    }),
+    "`pm i`"
+  );
+
+  const link = domWith(`<p><a href="https://example.com/x">链接文字</a></p>`);
+  assert.equal(
+    serializeRange(link, (range, document) => {
+      const node = document.querySelector("a").firstChild;
+      range.setStart(node, 0);
+      range.setEnd(node, 2);
+    }),
+    "[链接](https://example.com/x)"
+  );
+});
+
+test("partial selection keeps block context", () => {
+  const heading = domWith(`<h2>完整标题</h2>`);
+  assert.equal(
+    serializeRange(heading, (range, document) => {
+      const node = document.querySelector("h2").firstChild;
+      range.setStart(node, 0);
+      range.setEnd(node, 2);
+    }),
+    "## 完整"
+  );
+
+  const quote = domWith(`<blockquote><p>引用文字</p></blockquote>`);
+  assert.equal(
+    serializeRange(quote, (range, document) => {
+      const node = document.querySelector("blockquote p").firstChild;
+      range.setStart(node, 1);
+      range.setEnd(node, 3);
+    }),
+    "> 用文"
+  );
+
+  const list = domWith(`<ul><li>第一项</li><li>第二项</li></ul>`);
+  assert.equal(
+    serializeRange(list, (range, document) => {
+      const node = document.querySelectorAll("li")[1].firstChild;
+      range.setStart(node, 0);
+      range.setEnd(node, 2);
+    }),
+    "- 第二"
+  );
+
+  const ordered = domWith(`<ol start="3"><li>alpha</li><li>beta</li></ol>`);
+  assert.equal(
+    serializeRange(ordered, (range, document) => {
+      const node = document.querySelectorAll("li")[1].firstChild;
+      range.setStart(node, 1);
+      range.setEnd(node, 3);
+    }),
+    "4. et"
+  );
+});
+
+test("partial selection inside a table widens to the whole table", () => {
+  const dom = domWith(`
+    <table>
+      <thead><tr><th>名称</th><th>数值</th></tr></thead>
+      <tbody>
+        <tr><td>alpha</td><td>1.5</td></tr>
+        <tr><td>beta</td><td>2.5</td></tr>
+      </tbody>
+    </table>
+  `);
+  assert.equal(
+    serializeRange(dom, (range, document) => {
+      const node = document.querySelector("td").firstChild;
+      range.setStart(node, 1);
+      range.setEnd(node, 4);
+    }),
+    ["| 名称 | 数值 |", "| --- | --- |", "| alpha | 1.5 |", "| beta | 2.5 |"].join("\n")
+  );
+});
+
+test("partial selection inside a code block widens to a full fence", () => {
+  const dom = domWith(`
+    <div class="md-code-block">
+      <div data-code-block-banner><div class="infostring">python</div></div>
+      <div data-code-block-content>
+        <pre><code><span class="line">print('hello')</span>
+<span class="line">print('world')</span>
+</code></pre>
+      </div>
+    </div>
+  `);
+  assert.equal(
+    serializeRange(dom, (range, document) => {
+      const node = document.querySelector("span.line").firstChild;
+      range.setStart(node, 2);
+      range.setEnd(node, 5);
+    }),
+    ["```python", "print('hello')", "print('world')", "```"].join("\n")
+  );
+});

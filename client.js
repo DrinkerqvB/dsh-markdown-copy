@@ -40,11 +40,144 @@ window.__ModuleLoader__.load({
      */
     function serializeSelectionMarkdown(range) {
       var state = { codes: [] };
-      var body = renderFlow(range.cloneContents(), state);
+      var target = expandBulkRange(range);
+      var body;
+      if (
+        target === range &&
+        range.startContainer === range.endContainer &&
+        range.startContainer.nodeType === 3
+      ) {
+        body = renderTextSelection(range);
+      } else {
+        body = renderFlow(target.cloneContents(), state);
+      }
       var markdown = tidyMarkdown(body);
       return markdown.replace(/\u0000CODE(\d+)\u0000/g, function (match, index) {
         return state.codes[Number(index)] || "";
       });
+    }
+
+    /* ------------------------------------------------------------------------- */
+    /* selection context                                                         */
+    /* ------------------------------------------------------------------------- */
+
+    // A selection that only covers part of a table or of a code block cannot be
+    // rebuilt into valid Markdown from the fragment alone, so widen those two
+    // boundaries to the whole construct.  Everything else renders from the
+    // fragment as-is.
+    function expandBulkRange(range) {
+      var start = bulkAncestor(range.startContainer);
+      var end = bulkAncestor(range.endContainer);
+      if (!start && !end) return range;
+      var widened = range.cloneRange();
+      if (start) widened.setStartBefore(start);
+      if (end) widened.setEndAfter(end);
+      return widened;
+    }
+
+    function bulkAncestor(node) {
+      var element = node.nodeType === 1 ? node : node.parentNode;
+      var bulk = null;
+      while (element) {
+        if (
+          element.tagName === "TABLE" ||
+          element.tagName === "PRE" ||
+          hasClass(element, "md-code-block")
+        ) {
+          // Keep the outermost container: a card wraps its <pre>, and the banner
+          // holding the fence language lives on that wrapper.
+          bulk = element;
+        }
+        if (element.hasAttribute("data-chat-flow")) return bulk;
+        element = element.parentNode;
+      }
+      return bulk;
+    }
+
+    // A selection inside a single text node comes back from cloneContents() as
+    // bare text, losing every ancestor marker.  Rebuild those markers from the
+    // ancestor chain: emphasis, code, link and math wrappers, plus the block
+    // prefix of the quote, heading or list item the text belongs to.
+    function renderTextSelection(range) {
+      var value = (range.startContainer.data || "").slice(range.startOffset, range.endOffset);
+      var chain = [];
+      for (var node = range.startContainer.parentNode; node; node = node.parentNode) {
+        if (node.hasAttribute("data-chat-flow")) break;
+        chain.push(node);
+      }
+      chain.reverse();
+
+      var quote = "";
+      var indent = "";
+      var marker = "";
+      var heading = "";
+      var opens = "";
+      var closes = "";
+      var code = false;
+      var raw = false;
+
+      for (var i = 0; i < chain.length; i += 1) {
+        var element = chain[i];
+        var tag = element.tagName;
+        if (tag === "BLOCKQUOTE") {
+          quote += "> ";
+        } else if (tag === "LI") {
+          var list = element.parentNode;
+          var start = Number.parseInt((list && list.getAttribute("start")) || "1", 10);
+          if (!Number.isFinite(start)) start = 1;
+          var index = 0;
+          if (list && list.tagName === "OL") {
+            for (var child = 0; child < list.children.length; child += 1) {
+              if (list.children[child] === element) break;
+              if (list.children[child].tagName === "LI") index += 1;
+            }
+          }
+          var itemMarker = list && list.tagName === "OL" ? start + index + "." : "-";
+          marker = indent + itemMarker + " ";
+          indent += repeat(" ", itemMarker.length + 1);
+        } else if (/^H[1-6]$/.test(tag)) {
+          heading = repeat("#", Number(tag.charAt(1))) + " ";
+        } else if (tag === "STRONG" || tag === "B") {
+          opens += "**";
+          closes = "**" + closes;
+        } else if (tag === "EM" || tag === "I") {
+          opens += "*";
+          closes = "*" + closes;
+        } else if (tag === "DEL" || tag === "S" || tag === "STRIKE") {
+          opens += "~~";
+          closes = "~~" + closes;
+        } else if (tag === "CODE") {
+          code = true;
+        } else if (tag === "A") {
+          opens += "[";
+          closes = "](" + (element.getAttribute("href") || "") + ")" + closes;
+        } else if (hasClass(element, "katex")) {
+          opens += "$";
+          closes = "$" + closes;
+          raw = true;
+        }
+      }
+
+      var text;
+      if (code) {
+        var fence = repeat("`", inlineFenceLength(value));
+        var pad = /^`|`$|^\s|\s$/.test(value) ? " " : "";
+        text = fence + pad + value + pad + fence;
+      } else {
+        text = raw ? value : normalizeText(value);
+      }
+
+      var out = opens + text + closes;
+      var prefix = quote + heading + marker;
+      if (prefix) {
+        out = out
+          .split("\n")
+          .map(function (line) {
+            return line ? prefix + line : line;
+          })
+          .join("\n");
+      }
+      return out + "\n\n";
     }
 
     /* ------------------------------------------------------------------------- */
@@ -109,7 +242,7 @@ window.__ModuleLoader__.load({
         case "H4":
         case "H5":
         case "H6": {
-          var text = renderInlineChildren(element, state).trim();
+          var text = renderInlineChildren(element, state).trim().replace(/\s*\n\s*/g, " ");
           if (!text) return "";
           return repeat("#", Number(tag.charAt(1))) + " " + text + "\n\n";
         }
@@ -203,17 +336,27 @@ window.__ModuleLoader__.load({
       }
       if (items.length === 0) return renderFlow(element, state);
 
+      var loose = false;
+      for (var item = 0; item < items.length && !loose; item += 1) {
+        for (var child = 0; child < items[item].children.length; child += 1) {
+          if (items[item].children[child].tagName === "P") {
+            loose = true;
+            break;
+          }
+        }
+      }
+
       var out = "";
       for (var index = 0; index < items.length; index += 1) {
-        out += renderListItem(items[index], ordered ? start + index : null, state);
+        out += renderListItem(items[index], ordered ? start + index : null, state, loose);
       }
       return out + "\n";
     }
 
-    function renderListItem(item, number, state) {
-      var depth = state.listDepth || 0;
-      var indent = repeat("  ", depth);
+    function renderListItem(item, number, state, loose) {
+      var indent = state.listIndent || "";
       var marker = number === null ? "-" : number + ".";
+      var content = indent + repeat(" ", marker.length + 1);
 
       var inline = "";
       var blocks = [];
@@ -241,7 +384,7 @@ window.__ModuleLoader__.load({
       }
       if (!body) return "";
 
-      if (hasClass(item, "task-list-item")) {
+      if (hasClass(item, "task-list-item") || item.querySelector('input[type="checkbox"]')) {
         var box = item.querySelector('input[type="checkbox"]');
         var checked = box ? box.checked || box.hasAttribute("checked") : false;
         body = (checked ? "[x] " : "[ ] ") + body;
@@ -251,14 +394,15 @@ window.__ModuleLoader__.load({
       var out = indent + marker + " " + lines[0] + "\n";
       for (var line = 1; line < lines.length; line += 1) {
         if (lines[line].trim() === "") out += "\n";
-        else out += indent + "  " + lines[line] + "\n";
+        else out += content + lines[line] + "\n";
       }
 
       for (var n = 0; n < nested.length; n += 1) {
-        var nestedState = { codes: state.codes, listDepth: depth + 1 };
+        var nestedState = { codes: state.codes, listIndent: content };
         var nestedText = renderList(nested[n], nestedState).replace(/\n+$/, "");
         if (nestedText) out += nestedText + "\n";
       }
+      if (loose) out += "\n";
       return out;
     }
 
@@ -382,12 +526,12 @@ window.__ModuleLoader__.load({
       for (var i = 0; i < row.children.length; i += 1) {
         var cell = row.children[i];
         if (cell.tagName !== "TD" && cell.tagName !== "TH") continue;
-        var text = renderInlineChildren(cell, state)
+        var text = renderInlineChildren(cell, { codes: state.codes, breakAsSpace: true })
           .replace(/\s*\n\s*/g, " ")
           .trim()
           .replace(/\|/g, "\\|");
         cells.push(text);
-        var align = cell.style ? cell.style.textAlign : "";
+        var align = (cell.style && cell.style.textAlign) || cell.getAttribute("align") || "";
         separators.push(align === "center" ? ":---:" : align === "right" ? "---:" : align === "left" ? ":---" : "---");
       }
       return { cells: cells, separators: separators };
@@ -432,7 +576,7 @@ window.__ModuleLoader__.load({
       }
 
       var tag = element.tagName;
-      if (tag === "BR") return "\n";
+      if (tag === "BR") return state && state.breakAsSpace ? " " : "\\" + "\n";
       if (tag === "IMG") return renderImage(element);
       if (tag === "INPUT") return "";
       if (tag === "CODE") return renderInlineCode(element);
@@ -476,7 +620,7 @@ window.__ModuleLoader__.load({
     }
 
     function renderImage(element) {
-      var alt = element.getAttribute("alt") || "";
+      var alt = normalizeText(element.getAttribute("alt") || "").replace(/\n/g, " ");
       var source = element.getAttribute("src") || "";
       if (!source) return alt;
       var target = /[\s()<>]/.test(source) ? "<" + source + ">" : source;
@@ -526,8 +670,66 @@ window.__ModuleLoader__.load({
       return !!(element.classList && element.classList.contains(name));
     }
 
+    /**
+     * Escape a text node so that re-rendering the copied Markdown shows exactly
+     * these characters.
+     *
+     * The DOM only has the rendered characters: a source `\*` and a source `*`
+     * look identical here.  Escaping every character that could open a construct
+     * in its own position makes the output render the same way again, which is
+     * what this plugin promises (equivalent Markdown, not the original bytes).
+     */
     function normalizeText(text) {
-      return text.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+      var value = text.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+      var isWord = /[0-9A-Za-z\u0080-\uffff]/;
+      var isDigit = /[0-9]/;
+      // Two dollars in one text node can open math, so escape all of them.
+      var dollarPair = value.indexOf("$") !== -1 && value.indexOf("$") !== value.lastIndexOf("$");
+      var out = "";
+
+      for (var i = 0; i < value.length; i += 1) {
+        var ch = value.charAt(i);
+        var prev = i > 0 ? value.charAt(i - 1) : "";
+        var next = i + 1 < value.length ? value.charAt(i + 1) : "";
+        var lineStart = i === 0 || prev === "\n";
+        var escape = false;
+
+        if (ch === "\\") {
+          // A backslash escapes punctuation, a newline or the end of the text;
+          // `C:\Users` must stay untouched.
+          escape = next === "" || next === "\n" || /[!-/:-@[-`{-~]/.test(next);
+        } else if (ch === "`" || ch === "*") {
+          escape = true;
+        } else if (ch === "_") {
+          // Intraword underscores never open emphasis in CommonMark.
+          escape = !(isWord.test(prev) && isWord.test(next));
+        } else if (ch === "~") {
+          escape = prev === "~" || next === "~";
+        } else if (ch === "[" || ch === "]" || ch === "<") {
+          escape = true;
+        } else if (ch === "&") {
+          escape = /^[A-Za-z][A-Za-z0-9]{1,31};/.test(value.slice(i + 1));
+        } else if (ch === "$") {
+          escape = dollarPair;
+        } else if ((ch === "." || ch === ")") && (next === " " || next === "")) {
+          // `1.` and `1)` start an ordered list only at the beginning of a line.
+          var start = i;
+          while (start > 0 && isDigit.test(value.charAt(start - 1))) start -= 1;
+          escape = start < i && (start === 0 || value.charAt(start - 1) === "\n");
+        } else if (lineStart) {
+          if (ch === "=") {
+            escape = true;
+          } else if (ch === "#" || ch === ">" || ch === "+") {
+            escape = next === "" || next === " " || (ch === ">" && next === ">");
+          } else if (ch === "-") {
+            escape = next === "" || next === " " || next === "-";
+          }
+        }
+
+        out += escape ? "\\" + ch : ch;
+      }
+
+      return out;
     }
 
     function repeat(text, count) {
